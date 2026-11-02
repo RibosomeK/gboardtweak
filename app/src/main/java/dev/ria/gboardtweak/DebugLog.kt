@@ -24,16 +24,4 @@ object DebugLog {
             Log.e(Constants.TAG, message, throwable)
         }
     }
-
-    fun escape(text: CharSequence): String = buildString(text.length) {
-        for (ch in text) {
-            when {
-                ch == '\n' -> append("\\n")
-                ch == '\r' -> append("\\r")
-                ch == '\t' -> append("\\t")
-                ch.code < 0x20 || ch.code == 0x7f -> append("\\u%04x".format(ch.code))
-                else -> append(ch)
-            }
-        }
-    }
 }

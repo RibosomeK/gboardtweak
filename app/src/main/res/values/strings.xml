@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Gboard 数字布局半角标点</string>
-    <string name="xposed_description">在 Gboard 中文九宫格的数字布局中，将逗号和句号提交为半角 , 和 .；其他布局不干预。</string>
+    <string name="xposed_description">在 Gboard 中文九宫格的数字布局中，将逗号和句号提交为半角 , 和 .，并同步键面显示；其他布局不干预。</string>
 </resources>

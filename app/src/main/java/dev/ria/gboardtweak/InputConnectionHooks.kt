@@ -1,6 +1,5 @@
 package dev.ria.gboardtweak
 
-import android.view.KeyEvent
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -8,20 +7,20 @@ import java.lang.reflect.Method
 import java.util.Collections
 
 /**
- * There are two independent commit hooks:
+ * Intercepts committed text in two places:
  *
- * 1. Primary: discover the concrete InputConnection returned by InputMethodService and
- *    hook its commitText/setComposingText overloads. The class is a framework class whose
- *    method names are stable across Gboard updates.
- * 2. Fallback: hook Gboard 18.5.4's own commit wrapper (aekp.q / aemg.b), which are
- *    obfuscated and version-specific, but catch the commit before it is queued.
+ * 1. The concrete InputConnection returned by InputMethodService. Its class is
+ *    discovered at runtime and commitText() is hooked. This is the version-independent
+ *    path.
+ * 2. Gboard 18.5.4's own InputConnectionWrapper.commitText (obfuscated aekp.q), which
+ *    runs before the framework call. This is the path verified on-device.
  *
- * Conversion only happens when the active Keyboard is LatinDigitsKeyboard, the IME
- * subtype is Chinese, and the entire committed text is exactly one target character.
+ * Text is rewritten only when all of these are true:
+ * - the active keyboard is LatinKeyboardWithNumberMode showing its digit page;
+ * - the active keyboard is a Chinese keyboard;
+ * - the whole committed text is exactly U+FF0C or U+3002.
  */
 object InputConnectionHooks {
-    private val TEXT_METHODS = setOf("commitText", "setComposingText")
-
     private val hookedClassNames =
         Collections.synchronizedSet(mutableSetOf<String>())
     private val hookedMethodKeys =
@@ -29,7 +28,7 @@ object InputConnectionHooks {
 
     fun install(classLoader: ClassLoader) {
         installInputConnectionDiscovery(classLoader)
-        installGboardFallbacks(classLoader)
+        installGboardWrapperFallback(classLoader)
     }
 
     private fun installInputConnectionDiscovery(classLoader: ClassLoader) {
@@ -54,7 +53,7 @@ object InputConnectionHooks {
                     }
                 }
             )
-            DebugLog.i("InputMethodService.getCurrentInputConnection hook installed")
+            DebugLog.i("InputConnection discovery installed")
         } catch (t: Throwable) {
             DebugLog.e("failed to hook getCurrentInputConnection", t)
         }
@@ -65,26 +64,15 @@ object InputConnectionHooks {
             return
         }
 
-        var hookedCount = 0
         var cursor: Class<*>? = connectionClass
-
         while (cursor != null && cursor != Any::class.java) {
             for (method in cursor.declaredMethods) {
-                if (method.parameterTypes.isEmpty()) {
+                if (method.name != "commitText" || method.parameterTypes.isEmpty()) {
                     continue
                 }
-
-                val hook = when {
-                    method.name in TEXT_METHODS &&
-                        CharSequence::class.java.isAssignableFrom(method.parameterTypes[0]) ->
-                        TextMethodHook("InputConnection.${method.name}")
-
-                    method.name == "sendKeyEvent" &&
-                        method.parameterTypes[0] == KeyEvent::class.java ->
-                        KeyEventMethodHook("InputConnection.sendKeyEvent")
-
-                    else -> null
-                } ?: continue
+                if (!CharSequence::class.java.isAssignableFrom(method.parameterTypes[0])) {
+                    continue
+                }
 
                 val key = methodKey(cursor, method)
                 if (!hookedMethodKeys.add(key)) {
@@ -92,27 +80,57 @@ object InputConnectionHooks {
                 }
 
                 try {
-                    XposedBridge.hookMethod(method, hook)
-                    hookedCount++
+                    XposedBridge.hookMethod(
+                        method,
+                        CommitTextHook("InputConnection.commitText")
+                    )
                     DebugLog.i(
-                        "hooked ${cursor.name}.${method.name}(" +
+                        "hooked ${cursor.name}.commitText(" +
                             method.parameterTypes.joinToString(", ") { it.simpleName } +
                             ")"
                     )
                 } catch (t: Throwable) {
-                    DebugLog.e(
-                        "failed to hook ${cursor.name}.${method.name}",
-                        t
-                    )
+                    DebugLog.e("failed to hook ${cursor.name}.commitText", t)
                 }
             }
             cursor = cursor.superclass
         }
+    }
 
-        DebugLog.i(
-            "discovered InputConnection class ${connectionClass.name}, " +
-                "hooked $hookedCount text methods"
+    private fun installGboardWrapperFallback(classLoader: ClassLoader) {
+        val clazz = XposedHelpers.findClassIfExists(
+            Constants.GBOARD_COMMIT_WRAPPER_CLASS,
+            classLoader
         )
+
+        if (clazz == null) {
+            DebugLog.w("commit wrapper not found: ${Constants.GBOARD_COMMIT_WRAPPER_CLASS}")
+            return
+        }
+
+        val methods = clazz.declaredMethods.filter { method ->
+            method.name == "q" &&
+                method.parameterTypes.any {
+                    CharSequence::class.java.isAssignableFrom(it)
+                }
+        }
+
+        if (methods.isEmpty()) {
+            DebugLog.w("commit wrapper method not found")
+            return
+        }
+
+        for (method in methods) {
+            try {
+                XposedBridge.hookMethod(
+                    method,
+                    CommitTextHook("Gboard.commitText")
+                )
+                DebugLog.i("Gboard commit wrapper hook installed")
+            } catch (t: Throwable) {
+                DebugLog.e("failed to hook Gboard commit wrapper", t)
+            }
+        }
     }
 
     private fun methodKey(owner: Class<*>, method: Method): String {
@@ -120,56 +138,7 @@ object InputConnectionHooks {
             method.parameterTypes.joinToString(",") { it.name } + ")"
     }
 
-    private fun installGboardFallbacks(classLoader: ClassLoader) {
-        hookNamedMethod(
-            classLoader,
-            Constants.GBOARD_COMMIT_WRAPPER_CLASS,
-            "q",
-            "aekp.q"
-        )
-        hookNamedMethod(
-            classLoader,
-            Constants.GBOARD_COMMIT_QUEUE_CLASS,
-            "b",
-            "aemg.b"
-        )
-    }
-
-    private fun hookNamedMethod(
-        classLoader: ClassLoader,
-        className: String,
-        methodName: String,
-        source: String
-    ) {
-        val clazz = XposedHelpers.findClassIfExists(className, classLoader)
-        if (clazz == null) {
-            DebugLog.w("fallback class not found: $className")
-            return
-        }
-
-        val methods = clazz.declaredMethods.filter { method ->
-            method.name == methodName &&
-                method.parameterTypes.any {
-                    CharSequence::class.java.isAssignableFrom(it)
-                }
-        }
-
-        if (methods.isEmpty()) {
-            DebugLog.w("fallback method not found: $className.$methodName")
-            return
-        }
-
-        for (method in methods) {
-            try {
-                XposedBridge.hookMethod(method, TextMethodHook(source))
-                DebugLog.i("fallback hook installed: $source (${clazz.name})")
-            } catch (t: Throwable) {
-                DebugLog.e("failed to install fallback hook: $source", t)
-            }
-        }
-    }
-
-    private class TextMethodHook(
+    private class CommitTextHook(
         private val source: String
     ) : XC_MethodHook() {
         override fun beforeHookedMethod(param: MethodHookParam) {
@@ -182,47 +151,13 @@ object InputConnectionHooks {
             if (!PunctuationTransformer.isTarget(text)) {
                 return
             }
-
-            val digitMode = KeyboardStateTracker.isDigitModeActive()
-            val chinese = ImeState.isChinese()
-
-            DebugLog.i(
-                "$source sees '${DebugLog.escape(text)}' " +
-                    "digitMode=$digitMode zh=$chinese " +
-                    KeyboardStateTracker.stateDescription() +
-                    " keyboard=${KeyboardStateTracker.activeClass()} " +
-                    "name=${KeyboardStateTracker.activeName()}"
-            )
-
-            if (!digitMode || !chinese) {
+            if (!KeyboardStateTracker.isDigitModeActive() || !ImeState.isChinese()) {
                 return
             }
 
             val converted = PunctuationTransformer.transform(text)
             param.args[index] = converted
-            DebugLog.i(
-                "$source converted '${DebugLog.escape(text)}' -> " +
-                    "'${DebugLog.escape(converted)}'"
-            )
-        }
-    }
-
-    private class KeyEventMethodHook(
-        private val source: String
-    ) : XC_MethodHook() {
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            val keyEvent = param.args.firstOrNull { it is KeyEvent } as? KeyEvent ?: return
-            if (keyEvent.keyCode != KeyEvent.KEYCODE_COMMA &&
-                keyEvent.keyCode != KeyEvent.KEYCODE_PERIOD
-            ) {
-                return
-            }
-
-            DebugLog.i(
-                "$source sees keyCode=${keyEvent.keyCode} action=${keyEvent.action} " +
-                    "digitMode=${KeyboardStateTracker.isDigitModeActive()} " +
-                    KeyboardStateTracker.stateDescription()
-            )
+            DebugLog.i("$source converted '${text}' -> '${converted}'")
         }
     }
 

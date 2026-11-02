@@ -28,5 +28,12 @@ class MainHook : IXposedHookLoadPackage {
             DebugLog.e("InputConnectionHooks installation failed", t)
             XposedBridge.log(t)
         }
+
+        try {
+            KeyLabelHooks.install(lpparam.classLoader)
+        } catch (t: Throwable) {
+            DebugLog.e("KeyLabelHooks installation failed", t)
+            XposedBridge.log(t)
+        }
     }
 }
