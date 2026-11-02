@@ -1,5 +1,6 @@
 package dev.ria.gboardtweak
 
+import android.view.KeyEvent
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -48,7 +49,6 @@ object InputConnectionHooks {
                 "getCurrentInputConnection",
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        ImeState.onServiceSeen(param.thisObject)
                         val connection = param.result ?: return
                         ensureInputConnectionHooked(connection.javaClass)
                     }
@@ -70,15 +70,21 @@ object InputConnectionHooks {
 
         while (cursor != null && cursor != Any::class.java) {
             for (method in cursor.declaredMethods) {
-                if (method.name !in TEXT_METHODS) {
-                    continue
-                }
                 if (method.parameterTypes.isEmpty()) {
                     continue
                 }
-                if (!CharSequence::class.java.isAssignableFrom(method.parameterTypes[0])) {
-                    continue
-                }
+
+                val hook = when {
+                    method.name in TEXT_METHODS &&
+                        CharSequence::class.java.isAssignableFrom(method.parameterTypes[0]) ->
+                        TextMethodHook("InputConnection.${method.name}")
+
+                    method.name == "sendKeyEvent" &&
+                        method.parameterTypes[0] == KeyEvent::class.java ->
+                        KeyEventMethodHook("InputConnection.sendKeyEvent")
+
+                    else -> null
+                } ?: continue
 
                 val key = methodKey(cursor, method)
                 if (!hookedMethodKeys.add(key)) {
@@ -86,10 +92,7 @@ object InputConnectionHooks {
                 }
 
                 try {
-                    XposedBridge.hookMethod(
-                        method,
-                        TextMethodHook("InputConnection.${method.name}")
-                    )
+                    XposedBridge.hookMethod(method, hook)
                     hookedCount++
                     DebugLog.i(
                         "hooked ${cursor.name}.${method.name}(" +
@@ -180,17 +183,18 @@ object InputConnectionHooks {
                 return
             }
 
-            val digit = KeyboardStateTracker.isDigitKeyboardActive()
+            val digitMode = KeyboardStateTracker.isDigitModeActive()
             val chinese = ImeState.isChinese()
 
             DebugLog.i(
                 "$source sees '${DebugLog.escape(text)}' " +
-                    "digit=$digit zh=$chinese " +
-                    "keyboard=${KeyboardStateTracker.activeClass()} " +
+                    "digitMode=$digitMode zh=$chinese " +
+                    KeyboardStateTracker.stateDescription() +
+                    " keyboard=${KeyboardStateTracker.activeClass()} " +
                     "name=${KeyboardStateTracker.activeName()}"
             )
 
-            if (!digit || !chinese) {
+            if (!digitMode || !chinese) {
                 return
             }
 
@@ -199,6 +203,25 @@ object InputConnectionHooks {
             DebugLog.i(
                 "$source converted '${DebugLog.escape(text)}' -> " +
                     "'${DebugLog.escape(converted)}'"
+            )
+        }
+    }
+
+    private class KeyEventMethodHook(
+        private val source: String
+    ) : XC_MethodHook() {
+        override fun beforeHookedMethod(param: MethodHookParam) {
+            val keyEvent = param.args.firstOrNull { it is KeyEvent } as? KeyEvent ?: return
+            if (keyEvent.keyCode != KeyEvent.KEYCODE_COMMA &&
+                keyEvent.keyCode != KeyEvent.KEYCODE_PERIOD
+            ) {
+                return
+            }
+
+            DebugLog.i(
+                "$source sees keyCode=${keyEvent.keyCode} action=${keyEvent.action} " +
+                    "digitMode=${KeyboardStateTracker.isDigitModeActive()} " +
+                    KeyboardStateTracker.stateDescription()
             )
         }
     }

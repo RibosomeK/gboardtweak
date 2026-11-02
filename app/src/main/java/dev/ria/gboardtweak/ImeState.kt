@@ -1,75 +1,52 @@
 package dev.ria.gboardtweak
 
-import de.robv.android.xposed.XposedHelpers
+import java.util.Locale
 
 /**
- * Tracks enough of the current IME session to avoid touching non-Chinese digit keyboards.
+ * The active keyboard in the Chinese 9-key IME reports a localized name such as
+ * "简体中文 (9 键)". Gboard's keyboard object does not expose the IME subtype language,
+ * and InputMethodService has no public getCurrentInputMethodSubtype() on Android 16.
+ * The keyboard name is therefore the most direct available language indicator.
  *
- * Gboard's Chinese 9-key digit page and, for example, the Japanese digit page are both
- * rendered by Gboard's digit keyboard. The subtype language is the cheap discriminator.
+ * Conversion is additionally gated on the number-mode keyboard class and the digit
+ * mode state bit, so this is a defense-in-depth check rather than the only guard.
  */
 object ImeState {
-    @Volatile
-    private var service: Any? = null
+    private val CHINESE_MARKERS = arrayOf(
+        "中文",
+        "简体",
+        "简中",
+        "繁体",
+        "繁體",
+        "繁中",
+        "汉语",
+        "漢語",
+        "粵語",
+        "粤语",
+        "拼音",
+        "注音",
+        "笔画",
+        "筆畫",
+        "仓颉",
+        "倉頡",
+        "速成",
+        "五笔",
+        "五筆",
+    )
 
-    @Volatile
-    private var languageTag: String? = null
+    private val CHINESE_LATIN_MARKERS = arrayOf(
+        "chinese",
+        "pinyin",
+        "cantonese",
+        "zhuyin",
+    )
 
-    fun onServiceSeen(serviceInstance: Any?) {
-        if (serviceInstance == null) {
-            return
-        }
-        service = serviceInstance
-        refreshNow()
-    }
-
-    fun refreshNow() {
-        val serviceInstance = service ?: return
-        try {
-            val subtype = XposedHelpers.callMethod(
-                serviceInstance,
-                "getCurrentInputMethodSubtype"
-            ) ?: run {
-                languageTag = null
-                DebugLog.w("current IME subtype is null")
-                return
-            }
-
-            val tag = readLanguageTag(subtype)
-            languageTag = tag
-            DebugLog.i("IME subtype language=${tag ?: "<unknown>"}")
-        } catch (t: Throwable) {
-            languageTag = null
-            DebugLog.w("failed to read current IME subtype", t)
-        }
-    }
-
-    private fun readLanguageTag(subtype: Any): String? {
-        try {
-            val languageTag = XposedHelpers.callMethod(subtype, "getLanguageTag") as? String
-            if (!languageTag.isNullOrEmpty()) {
-                return languageTag
-            }
-        } catch (_: Throwable) {
-            // Fall back to the deprecated getLocale() below.
-        }
-        return try {
-            XposedHelpers.callMethod(subtype, "getLocale") as? String
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    /**
-     * Unknown subtype information is treated as "allow": the caller still requires the
-     * active keyboard to be the digit layout and the committed text to be exactly one
-     * of the two target punctuation marks.
-     */
     fun isChinese(): Boolean {
-        val tag = languageTag ?: return true
-        if (tag.isEmpty() || tag == "und") {
+        val name = KeyboardStateTracker.activeName() ?: return false
+        if (CHINESE_MARKERS.any { name.contains(it) }) {
             return true
         }
-        return tag.startsWith("zh", ignoreCase = true)
+        val lower = name.lowercase(Locale.ROOT)
+        return CHINESE_LATIN_MARKERS.any { lower.contains(it) }
     }
 }
