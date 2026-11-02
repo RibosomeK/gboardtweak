@@ -9,3 +9,6 @@ analysis/
 captures/
 .DS_Store
 .kotlin/
+
+# Local reverse-engineering notes / original task brief
+task.txt

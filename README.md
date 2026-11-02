@@ -12,7 +12,7 @@
 
 已在以下环境实机验证通过：
 
-- Android 16（SDK 36），OnePlus CPH2769
+- Android 16（SDK 36）
 - Gboard `18.5.4.993608717-beta-arm64-v8a`
 - LSPosed（传统 Xposed API）
 - 中文拼音九宫格
