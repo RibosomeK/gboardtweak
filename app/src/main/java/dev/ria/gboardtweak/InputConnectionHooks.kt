@@ -18,7 +18,12 @@ import java.util.Collections
  * Text is rewritten only when all of these are true:
  * - the active keyboard is LatinKeyboardWithNumberMode showing its digit page;
  * - the active keyboard is a Chinese keyboard;
- * - the whole committed text is exactly U+FF0C or U+3002.
+ * - the whole committed text is one of the active digit-page labels.
+ *
+ * On the digit page the first four punctuation-strip keys are relabeled to
+ * +, -, ×, ÷ while still committing their original punctuation; those labels are
+ * translated by [MathSymbols]. The remaining comma/period keys keep the exact
+ * U+FF0C -> "," and U+3002 -> "." mapping from [PunctuationTransformer].
  */
 object InputConnectionHooks {
     private val hookedClassNames =
@@ -148,10 +153,22 @@ object InputConnectionHooks {
             }
 
             val text = param.args[index] as CharSequence
+            val digitPage = KeyboardStateTracker.isDigitModeActive()
+            val chinese = ImeState.isChinese()
+
+            if (digitPage && chinese) {
+                val operator = MathSymbols.transform(text)
+                if (operator != null) {
+                    param.args[index] = operator
+                    DebugLog.i("$source converted '$text' -> '$operator'")
+                    return
+                }
+            }
+
             if (!PunctuationTransformer.isTarget(text)) {
                 return
             }
-            if (!KeyboardStateTracker.isDigitModeActive() || !ImeState.isChinese()) {
+            if (!digitPage || !chinese) {
                 return
             }
 
